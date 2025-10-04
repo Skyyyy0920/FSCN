@@ -5,7 +5,15 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from sklearn.metrics import accuracy_score, roc_auc_score
+from sklearn.metrics import (
+    accuracy_score, 
+    roc_auc_score, 
+    precision_score, 
+    recall_score, 
+    f1_score,
+    confusion_matrix,
+    classification_report
+)
 from tqdm import tqdm
 from collections import Counter
 
@@ -16,7 +24,8 @@ from data_utils import (
     prepare_task_data,
     get_num_classes,
     print_task_summary,
-    BrainDataset
+    BrainDataset,
+    BalancedBatchSampler
 )
 from losses import get_loss_function, print_loss_info
 
@@ -45,26 +54,26 @@ def train_epoch(model, dataloader, criterion, optimizer, device):
         sc = sc.to(device)
         labels = labels.to(device)
 
-        # 前向传播
+        # Forward pass
         optimizer.zero_grad()
         logits = model(fc, sc)
-        loss = criterion(logits, labels)  # criterion应该设置ignore_index=-1
+        loss = criterion(logits, labels)  # criterion should set ignore_index=-1
 
-        # 反向传播
+        # Backward pass
         loss.backward()
         optimizer.step()
 
-        # 记录（只记录有效标签的样本用于指标计算）
+        # Record metrics (only for samples with valid labels)
         total_loss += loss.item()
         probs = torch.softmax(logits, dim=1)
         preds = torch.argmax(probs, dim=1)
 
-        # 转换为numpy
+        # Convert to numpy
         preds_np = preds.cpu().numpy()
         labels_np = labels.cpu().numpy()
         probs_np = probs[:, 1].detach().cpu().numpy()
 
-        # 只保留有效标签（!= -1）的样本用于指标计算
+        # Only keep samples with valid labels (!= -1) for metric calculation
         valid_mask = labels_np != -1
         all_preds.extend(preds_np[valid_mask])
         all_labels.extend(labels_np[valid_mask])
@@ -72,22 +81,25 @@ def train_epoch(model, dataloader, criterion, optimizer, device):
 
     avg_loss = total_loss / len(dataloader)
 
-    # 计算准确率和AUROC（只基于有效标签）
-    if len(all_labels) > 0:
+    # Compute metrics (only based on valid labels)
+    if len(all_labels) > 0 and len(set(all_labels)) > 1:
         accuracy = accuracy_score(all_labels, all_preds)
-        # 计算AUROC（需要至少两个类别）
+        precision = precision_score(all_labels, all_preds, average='binary', zero_division=0)
+        recall = recall_score(all_labels, all_preds, average='binary', zero_division=0)
+        f1 = f1_score(all_labels, all_preds, average='binary', zero_division=0)
+        # Compute AUROC (requires at least two classes)
         try:
             auroc = roc_auc_score(all_labels, all_probs)
         except:
             auroc = 0.5
     else:
-        accuracy = 0.0
+        accuracy = precision = recall = f1 = 0.0
         auroc = 0.5
 
-    return avg_loss, accuracy, auroc
+    return avg_loss, accuracy, precision, recall, f1, auroc
 
 
-def evaluate(model, dataloader, criterion, device):
+def evaluate(model, dataloader, criterion, device, show_report=False):
     model.eval()
     total_loss = 0
     all_preds = []
@@ -100,21 +112,21 @@ def evaluate(model, dataloader, criterion, device):
             sc = sc.to(device)
             labels = labels.to(device)
 
-            # 前向传播
+            # Forward pass
             logits = model(fc, sc)
-            loss = criterion(logits, labels)  # criterion应该设置ignore_index=-1
+            loss = criterion(logits, labels)  # criterion should set ignore_index=-1
 
-            # 记录
+            # Record metrics
             total_loss += loss.item()
             probs = torch.softmax(logits, dim=1)
             preds = torch.argmax(probs, dim=1)
 
-            # 转换为numpy
+            # Convert to numpy
             preds_np = preds.cpu().numpy()
             labels_np = labels.cpu().numpy()
             probs_np = probs[:, 1].cpu().numpy()
 
-            # 只保留有效标签（!= -1）的样本用于指标计算
+            # Only keep samples with valid labels (!= -1) for metric calculation
             valid_mask = labels_np != -1
             all_preds.extend(preds_np[valid_mask])
             all_labels.extend(labels_np[valid_mask])
@@ -122,47 +134,77 @@ def evaluate(model, dataloader, criterion, device):
 
     avg_loss = total_loss / len(dataloader)
 
-    # 计算准确率和AUROC（只基于有效标签）
-    if len(all_labels) > 0:
+    # Compute metrics (only based on valid labels)
+    if len(all_labels) > 0 and len(set(all_labels)) > 1:
         accuracy = accuracy_score(all_labels, all_preds)
-        # 计算AUROC
+        precision = precision_score(all_labels, all_preds, average='binary', zero_division=0)
+        recall = recall_score(all_labels, all_preds, average='binary', zero_division=0)
+        f1 = f1_score(all_labels, all_preds, average='binary', zero_division=0)
+        # Compute AUROC
         try:
             auroc = roc_auc_score(all_labels, all_probs)
         except:
             auroc = 0.5
+        
+        # Show detailed report if requested
+        if show_report:
+            print("\n" + "="*60)
+            print("Classification Report:")
+            print("="*60)
+            print(classification_report(all_labels, all_preds, target_names=['Class 0', 'Class 1'], zero_division=0))
+            cm = confusion_matrix(all_labels, all_preds)
+            print("Confusion Matrix:")
+            print(cm)
+            print("="*60 + "\n")
     else:
-        accuracy = 0.0
+        accuracy = precision = recall = f1 = 0.0
         auroc = 0.5
 
-    return avg_loss, accuracy, auroc
+    return avg_loss, accuracy, precision, recall, f1, auroc
 
 
 def train_single_task(task_idx, train_data, val_data, num_nodes, config, device):
     print(f"\n{'#' * 80}")
-    print(f"# 开始训练任务 {task_idx}")
+    print(f"# Starting Training for Task {task_idx}")
     print(f"{'#' * 80}\n")
 
     print_task_summary(task_idx, train_data, val_data)
 
     num_classes = get_num_classes(train_data)
-    print(f"num of class: {num_classes}")
+    print(f"Number of classes: {num_classes}")
 
     train_labels = [d['label'] for d in train_data]
     train_labels_valid = [l for l in train_labels if l != -1]  # filter label = -1
     class_counts = dict(Counter(train_labels_valid))
 
     print(f"Training data distribution: {dict(Counter(train_labels))}")
-    print(f"label distribution (0,1): {class_counts}")
+    print(f"Valid label distribution (0,1): {class_counts}")
 
     train_dataset = BrainDataset(train_data)
     val_dataset = BrainDataset(val_data)
 
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=config['batch_size'],
-        shuffle=True,
-        num_workers=0
-    )
+    # Use Balanced Batch Sampler for training to handle class imbalance
+    if config.get('use_balanced_sampler', True):
+        print(f"Using Balanced Batch Sampler (batch_size={config['batch_size']})")
+        train_sampler = BalancedBatchSampler(
+            labels=train_labels,
+            batch_size=config['batch_size'],
+            ignore_label=-1
+        )
+        train_loader = DataLoader(
+            train_dataset,
+            batch_sampler=train_sampler,
+            num_workers=0
+        )
+    else:
+        print(f"Using standard random sampling (batch_size={config['batch_size']})")
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=config['batch_size'],
+            shuffle=True,
+            num_workers=0
+        )
+    
     val_loader = DataLoader(
         val_dataset,
         batch_size=config['batch_size'],
@@ -176,7 +218,7 @@ def train_single_task(task_idx, train_data, val_data, num_nodes, config, device)
         num_classes=num_classes
     ).to(device)
 
-    print(f"Model parameter num: {sum(p.numel() for p in model.parameters()):,}")
+    print(f"Model parameter count: {sum(p.numel() for p in model.parameters()):,}")
 
     print_loss_info(config['loss_type'], gamma=config.get('focal_gamma', 2.0))
 
@@ -184,7 +226,7 @@ def train_single_task(task_idx, train_data, val_data, num_nodes, config, device)
         loss_type=config['loss_type'],
         gamma=config.get('focal_gamma', 2.0),
         class_counts=class_counts,
-        ignore_index=-1  # 忽略无标签样本
+        ignore_index=-1  # Ignore unlabeled samples
     )
 
     if hasattr(criterion, 'weight') and criterion.weight is not None:
@@ -198,25 +240,28 @@ def train_single_task(task_idx, train_data, val_data, num_nodes, config, device)
         weight_decay=config['weight_decay']
     )
 
+    best_val_f1 = 0
     best_val_auroc = 0
     patience_counter = 0
     best_model_path = f'best_model_task_{task_idx}.pth'
 
-    print(f"\nTraining task {task_idx}...\n")
+    print(f"\nTraining Task {task_idx}...\n")
     for epoch in range(config['epochs']):
-        train_loss, train_acc, train_auroc = train_epoch(
+        train_loss, train_acc, train_prec, train_rec, train_f1, train_auroc = train_epoch(
             model, train_loader, criterion, optimizer, device
         )
 
-        val_loss, val_acc, val_auroc = evaluate(
+        val_loss, val_acc, val_prec, val_rec, val_f1, val_auroc = evaluate(
             model, val_loader, criterion, device
         )
 
         print(f"Epoch [{epoch + 1}/{config['epochs']}]")
-        print(f"  Train - Loss: {train_loss:.4f}, Acc: {train_acc:.4f}, AUROC: {train_auroc:.4f}")
-        print(f"  Valid - Loss: {val_loss:.4f}, Acc: {val_acc:.4f}, AUROC: {val_auroc:.4f}")
+        print(f"  Train - Loss: {train_loss:.4f}, Acc: {train_acc:.4f}, Prec: {train_prec:.4f}, Rec: {train_rec:.4f}, F1: {train_f1:.4f}, AUROC: {train_auroc:.4f}")
+        print(f"  Valid - Loss: {val_loss:.4f}, Acc: {val_acc:.4f}, Prec: {val_prec:.4f}, Rec: {val_rec:.4f}, F1: {val_f1:.4f}, AUROC: {val_auroc:.4f}")
 
-        if val_auroc > best_val_auroc:
+        # Use F1-score as primary metric for model selection (better for imbalanced data)
+        if val_f1 > best_val_f1 or (val_f1 == best_val_f1 and val_auroc > best_val_auroc):
+            best_val_f1 = val_f1
             best_val_auroc = val_auroc
             patience_counter = 0
             torch.save({
@@ -224,26 +269,39 @@ def train_single_task(task_idx, train_data, val_data, num_nodes, config, device)
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
+                'val_f1': val_f1,
                 'val_auroc': val_auroc,
                 'config': config,
                 'num_classes': num_classes
             }, best_model_path)
-            print(f"  ✓ 保存最佳模型 (AUROC: {val_auroc:.4f})")
+            print(f"  ✓ Saved best model (F1: {val_f1:.4f}, AUROC: {val_auroc:.4f})")
         else:
             patience_counter += 1
-            print(f"  Early Stopping count: {patience_counter}/{config['patience']}")
+            print(f"  Early stopping counter: {patience_counter}/{config['patience']}")
 
         if patience_counter >= config['patience']:
-            print(f"\nEarly Stopping at epoch {epoch + 1}!")
+            print(f"\nEarly stopping triggered at epoch {epoch + 1}!")
             break
 
         print()
 
-    print(f"\n任务 {task_idx} 训练完成！")
-    print(f"最佳验证AUROC: {best_val_auroc:.4f}")
-    print(f"最佳模型已保存至: {best_model_path}\n")
+    # Load best model and show final evaluation report
+    print(f"\n{'='*80}")
+    print(f"Task {task_idx} Training Complete!")
+    print(f"{'='*80}")
+    print(f"Best validation F1-score: {best_val_f1:.4f}")
+    print(f"Best validation AUROC: {best_val_auroc:.4f}")
+    print(f"Best model saved to: {best_model_path}")
+    
+    # Load best model for final evaluation
+    checkpoint = torch.load(best_model_path)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    
+    # Show detailed classification report on validation set
+    print(f"\nFinal Evaluation on Validation Set:")
+    _, _, _, _, _, _ = evaluate(model, val_loader, criterion, device, show_report=True)
 
-    return best_val_auroc
+    return best_val_f1, best_val_auroc
 
 
 def parse_args():
@@ -252,33 +310,35 @@ def parse_args():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
 
-    # data
+    # Data
     parser.add_argument('--data_path', type=str,
                         default=r'W:\Brain Analysis\data\data\data_dict.pkl')
     parser.add_argument('--val_split', type=float, default=0.2)
     parser.add_argument('--min_ratio', type=float, default=0.05,
-                        help='最小样本比例阈值（用于过滤不平衡任务）')
+                        help='Minimum sample ratio threshold (for filtering imbalanced tasks)')
 
     # Model
-    parser.add_argument('--d_model', type=int, default=128, help='model hidden size')
+    parser.add_argument('--d_model', type=int, default=128, help='Model hidden size')
 
     # Training
     parser.add_argument('--batch_size', type=int, default=64)
-    parser.add_argument('--epochs', type=int, default=20)
+    parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--lr', type=float, default=1e-5)
     parser.add_argument('--weight_decay', type=float, default=1e-5)
-    parser.add_argument('--patience', type=int, default=10, help='early stopping patience')
+    parser.add_argument('--patience', type=int, default=10, help='Early stopping patience')
+    parser.add_argument('--use_balanced_sampler', action='store_true', default=True,
+                        help='Use balanced batch sampler to handle class imbalance')
 
     # Loss Function
-    parser.add_argument('--loss_type', type=str, default='weighted_ce',
+    parser.add_argument('--loss_type', type=str, default='focal',
                         choices=['ce', 'focal', 'weighted_ce', 'weighted_focal'],
-                        help='loss function type')
-    parser.add_argument('--focal_gamma', type=float, default=3.0, help='Focal Loss gamma')
+                        help='Loss function type')
+    parser.add_argument('--focal_gamma', type=float, default=3.0, help='Focal Loss gamma parameter')
 
-    parser.add_argument('--seed', type=int, default=42, help='random seed')
+    parser.add_argument('--seed', type=int, default=42, help='Random seed')
     parser.add_argument('--device', type=str, default='auto', choices=['auto', 'cpu', 'cuda'])
     parser.add_argument('--tasks', type=int, nargs='+', default=[4, 5, 7, 8],
-                        help='指定要训练的任务ID（默认训练所有有效任务）')
+                        help='Specify task IDs to train (default: train all valid tasks)')
 
     args = parser.parse_args()
     return args
@@ -309,7 +369,7 @@ def main():
     # valid_tasks, task_stats = analyze_tasks(data_dict, min_ratio=args.min_ratio)
 
     # if len(valid_tasks) == 0:
-    #     print("错误：没有找到有效的任务！")
+    #     print("Error: No valid tasks found!")
     #     return
 
     # if args.tasks is not None:
@@ -318,7 +378,7 @@ def main():
     #         print(f"Error: None of the specified tasks {args.tasks} are valid!")
     #         return
     #     valid_tasks = specified_tasks
-    #     print(f"\nOnly train task: {valid_tasks}\n")
+    #     print(f"\nOnly training tasks: {valid_tasks}\n")
     ###################################################################################
 
     results = {}
@@ -331,7 +391,7 @@ def main():
             random_state=args.seed
         )
 
-        best_auroc = train_single_task(
+        best_f1, best_auroc = train_single_task(
             task_idx,
             train_data,
             val_data,
@@ -340,21 +400,23 @@ def main():
             device
         )
 
-        results[task_idx] = best_auroc
+        results[task_idx] = {'f1': best_f1, 'auroc': best_auroc}
 
     print("\n" + "=" * 80)
-    print("所有任务训练完成！")
+    print("All Tasks Training Complete!")
     print("=" * 80)
-    print("\n任务性能总结:")
-    print(f"{'任务ID':<10} {'最佳AUROC':<15} {'状态'}")
-    print("-" * 40)
+    print("\nTask Performance Summary:")
+    print(f"{'Task ID':<10} {'Best F1':<15} {'Best AUROC':<15} {'Status'}")
+    print("-" * 60)
     for task_idx in args.tasks:
-        auroc = results[task_idx]
-        print(f"{task_idx:<10} {auroc:<15.4f} FINISHED")
+        f1 = results[task_idx]['f1']
+        auroc = results[task_idx]['auroc']
+        print(f"{task_idx:<10} {f1:<15.4f} {auroc:<15.4f} FINISHED")
 
-    avg_auroc = np.mean(list(results.values()))
-    print("-" * 40)
-    print(f"{'平均':<10} {avg_auroc:<15.4f}")
+    avg_f1 = np.mean([r['f1'] for r in results.values()])
+    avg_auroc = np.mean([r['auroc'] for r in results.values()])
+    print("-" * 60)
+    print(f"{'Average':<10} {avg_f1:<15.4f} {avg_auroc:<15.4f}")
     print("=" * 80 + "\n")
 
 
