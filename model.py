@@ -13,9 +13,9 @@ class TransformerEncoder(nn.Module):
     def __init__(self, input_dim, d_model, nhead=4, num_layers=2, dropout=0.1):
         super().__init__()
         encoder_layer = nn.TransformerEncoderLayer(
-            d_model=input_dim,
+            d_model=d_model,
             nhead=nhead,
-            dim_feedforward=input_dim * 4,
+            dim_feedforward=d_model * 4,
             dropout=dropout,
             batch_first=True
         )
@@ -42,128 +42,6 @@ class GCNBranch(nn.Module):
         x = self.dropout(x)
         x = self.conv2(x, edge_index, edge_weight)
         return x
-
-
-# class CrossAttention(nn.Module):
-#     """
-#     交叉注意力模块
-#     计算 Q @ K^T / sqrt(d) 后与 V 相乘，不包含残差连接和LayerNorm
-#     """
-#
-#     def __init__(self, d_model, nhead=4, dropout=0.1):
-#         super().__init__()
-#         self.multihead_attn = nn.MultiheadAttention(
-#             embed_dim=d_model,
-#             num_heads=nhead,
-#             dropout=dropout,
-#             batch_first=True
-#         )
-#
-#     def forward(self, query, key_value):
-#         """
-#         query: [batch, N, d_model]
-#         key_value: [batch, N, d_model]
-#         返回: 交叉注意力输出 [batch, N, d_model]
-#         """
-#         attn_output, _ = self.multihead_attn(query, key_value, key_value)
-#         return attn_output
-
-
-# class DualBranchModel(nn.Module):
-#     """
-#     Dual Branch Model：FC Branch + SC Branch + Cross-Attention
-#     """
-#
-#     def __init__(self, num_nodes, d_model=128, num_classes=2):
-#         """
-#         num_nodes: ROI nums
-#         """
-#         super().__init__()
-#         self.num_nodes = num_nodes
-#         self.d_model = d_model
-#
-#         # FC分支：使用Transformer（无positional embedding）
-#         self.fc_branch = TransformerEncoder(
-#             input_dim=num_nodes,
-#             d_model=d_model,
-#             nhead=4,
-#             num_layers=2
-#         )
-#
-#         # SC分支：使用GCN
-#         self.sc_branch = GCNBranch(
-#             input_dim=num_nodes,
-#             hidden_dim=d_model,
-#             output_dim=d_model
-#         )
-#
-#         # 交叉注意力模块
-#         self.cross_attn_fc2sc = CrossAttention(d_model, nhead=4)
-#         self.cross_attn_sc2fc = CrossAttention(d_model, nhead=4)
-#
-#         # 残差连接后的LayerNorm
-#         self.norm_fc = nn.LayerNorm(d_model)
-#         self.norm_sc = nn.LayerNorm(d_model)
-#
-#         # 融合MLP：输入是拼接后的特征 [batch, N, 2*d_model]
-#         self.fusion_mlp = nn.Sequential(
-#             nn.Linear(2 * d_model, d_model),
-#             nn.ReLU(),
-#             nn.Dropout(0.1),
-#             nn.Linear(d_model, d_model)
-#         )
-#
-#         # 分类器
-#         self.classifier = nn.Sequential(
-#             nn.Linear(num_nodes * d_model, 128),
-#             nn.ReLU(),
-#             nn.Dropout(0.3),
-#             nn.Linear(128, num_classes)
-#         )
-#
-#     def forward(self, fc_matrix, sc_matrix):
-#         """
-#         fc_matrix: [batch, N, N]
-#         sc_matrix: [batch, N, N]
-#         """
-#         batch_size = fc_matrix.shape[0]
-#
-#         # 1. FC分支特征提取
-#         Z_F = self.fc_branch(fc_matrix)  # [batch, N, d_model]
-#
-#         # 2. SC分支特征提取
-#         Z_S_list = []
-#         for i in range(batch_size):
-#             sc = sc_matrix[i]  # [N, N]
-#             edge_index, edge_weight = self._sc_to_edge(sc)
-#             node_features = sc  # [N, N]
-#
-#             z_s = self.sc_branch(node_features, edge_index, edge_weight)  # [N, d_model]
-#             Z_S_list.append(z_s)
-#
-#         Z_S = torch.stack(Z_S_list, dim=0)  # [batch, N, d_model]
-#
-#         # 3. 交叉注意力
-#         # CA_F2S: Q=Z_F, K=Z_S, V=Z_S
-#         CA_F2S = self.cross_attn_fc2sc(Z_F, Z_S)  # [batch, N, d_model]
-#         # CA_S2F: Q=Z_S, K=Z_F, V=Z_F
-#         CA_S2F = self.cross_attn_sc2fc(Z_S, Z_F)  # [batch, N, d_model]
-#
-#         # 4. 残差连接 + LayerNorm
-#         Z_F_fused = self.norm_fc(Z_F + CA_F2S)  # [batch, N, d_model]
-#         Z_S_fused = self.norm_sc(Z_S + CA_S2F)  # [batch, N, d_model]
-#
-#         # 5. 特征拼接
-#         Z_concat = torch.cat([Z_F_fused, Z_S_fused], dim=-1)  # [batch, N, 2*d_model]
-#
-#         # 6. 融合MLP
-#         Z_joint = self.fusion_mlp(Z_concat)  # [batch, N, d_model]
-#
-#         # 7. 展平并分类
-#         Z_joint_flat = Z_joint.flatten(start_dim=1)  # [batch, N * d_model]
-#         logits = self.classifier(Z_joint_flat)  # [batch, num_classes]
-#
-#         return logits
 
 
 class GatedFusion(nn.Module):
@@ -260,7 +138,7 @@ class DualBranchModel(nn.Module):
         self.sc_branch = GCNBranch(
             input_dim=num_nodes,
             hidden_dim=d_model,
-            output_dim=num_nodes
+            output_dim=d_model
         )
 
         # ===== 替换为结构感知门控交叉注意力 =====

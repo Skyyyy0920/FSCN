@@ -8,7 +8,7 @@ data_path: W:\Brain Analysis\FSCN\data\abide.npy
 val_split: 0.1
 
 # Model architecture
-d_model: 128
+d_model: 200
 
 # Training hyperparameters
 batch_size: 32
