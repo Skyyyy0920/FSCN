@@ -374,8 +374,6 @@ def parse_args():
                         default=r'W:\Brain Analysis\FSCN\data\abide.npy',
                         help='Path to data file (.pkl for ABCD, .npy for ABIDE)')
     parser.add_argument('--val_split', type=float, default=0.1)
-    parser.add_argument('--min_ratio', type=float, default=0.05,
-                        help='Minimum sample ratio threshold (for filtering imbalanced tasks)')
 
     # Model
     parser.add_argument('--d_model', type=int, default=128, help='Model hidden size')
@@ -440,22 +438,6 @@ def main():
     else:
         print(f"Loading ABCD dataset...")
         data_dict, num_nodes = load_raw_data(args.data_path)
-
-    ###################################################################################
-    # valid_tasks, task_stats = analyze_tasks(data_dict, min_ratio=args.min_ratio)
-
-    # if len(valid_tasks) == 0:
-    #     print("Error: No valid tasks found!")
-    #     return
-
-    # if args.tasks is not None:
-    #     specified_tasks = [t for t in args.tasks if t in valid_tasks]
-    #     if len(specified_tasks) == 0:
-    #         print(f"Error: None of the specified tasks {args.tasks} are valid!")
-    #         return
-    #     valid_tasks = specified_tasks
-    #     print(f"\nOnly training tasks: {valid_tasks}\n")
-    ###################################################################################
 
     results = {}
 

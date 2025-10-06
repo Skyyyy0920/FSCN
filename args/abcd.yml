@@ -6,7 +6,6 @@ data_path: W:\Brain Analysis\data\data\data_dict.pkl
 
 # Data splitting
 val_split: 0.2
-min_ratio: 0.05
 
 # Model architecture
 d_model: 128
