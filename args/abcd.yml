@@ -1,0 +1,37 @@
+# ABCD Dataset Configuration
+# Multi-task classification
+
+dataset: ABCD
+data_path: W:\Brain Analysis\data\data\data_dict.pkl
+
+# Data splitting
+val_split: 0.2
+min_ratio: 0.05
+
+# Model architecture
+d_model: 128
+
+# Training hyperparameters
+batch_size: 64
+epochs: 100
+lr: 1.0e-5
+weight_decay: 1.0e-5
+patience: 10
+
+# Class imbalance handling
+use_balanced_sampler: true
+minority_ratio: 0.3
+
+# Loss function
+loss_type: weighted_focal  # Options: ce, focal, weighted_ce, weighted_focal
+focal_gamma: 2.0
+
+# Reproducibility
+seed: 42
+
+# Device
+device: auto  # Options: auto, cpu, cuda
+
+# Specific tasks to train (Task IDs for ABCD)
+tasks: [4, 5, 7, 8]
+

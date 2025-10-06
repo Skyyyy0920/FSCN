@@ -21,75 +21,6 @@ class BrainDataset(Dataset):
         return fc, sc, label
 
 
-# class BalancedBatchSampler(Sampler):
-#     """
-#     Balanced Batch Sampler for handling class imbalance
-#
-#     This sampler ensures that each batch contains a balanced number of samples
-#     from each class (or as balanced as possible).
-#
-#     Args:
-#         labels: List of labels for all samples
-#         batch_size: Size of each batch
-#         ignore_label: Label to ignore (e.g., -1 for unlabeled data)
-#     """
-#
-#     def __init__(self, labels, batch_size, ignore_label=-1):
-#         self.labels = np.array(labels)
-#         self.batch_size = batch_size
-#         self.ignore_label = ignore_label
-#
-#         # Get indices for each class (excluding ignore_label)
-#         self.class_indices = {}
-#         unique_labels = set(labels) - {ignore_label}
-#
-#         for label in unique_labels:
-#             self.class_indices[label] = np.where(self.labels == label)[0]
-#
-#         # Calculate number of samples per class per batch
-#         self.n_classes = len(self.class_indices)
-#         if self.n_classes > 0:
-#             self.samples_per_class = self.batch_size // self.n_classes
-#             self.remainder = self.batch_size % self.n_classes
-#         else:
-#             self.samples_per_class = 0
-#             self.remainder = 0
-#
-#         # Calculate total number of batches based on the minority class
-#         if self.n_classes > 0:
-#             min_class_samples = min(len(indices) for indices in self.class_indices.values())
-#             self.n_batches = min_class_samples // self.samples_per_class
-#         else:
-#             self.n_batches = 0
-#
-#     def __iter__(self):
-#         # Shuffle indices for each class
-#         shuffled_indices = {}
-#         for label, indices in self.class_indices.items():
-#             shuffled_indices[label] = np.random.permutation(indices)
-#
-#         # Generate batches
-#         for batch_idx in range(self.n_batches):
-#             batch = []
-#             for label in sorted(self.class_indices.keys()):
-#                 start = batch_idx * self.samples_per_class
-#                 end = start + self.samples_per_class
-#                 batch.extend(shuffled_indices[label][start:end].tolist())
-#
-#             # Add remainder samples if needed
-#             if self.remainder > 0 and batch_idx == 0:
-#                 for i, label in enumerate(sorted(self.class_indices.keys())):
-#                     if i < self.remainder:
-#                         batch.append(int(shuffled_indices[label][0]))
-#
-#             # Shuffle the batch to mix different classes
-#             np.random.shuffle(batch)
-#             yield batch  # Yield the entire batch as a list
-#
-#     def __len__(self):
-#         return self.n_batches
-
-
 class BalancedBatchSampler(Sampler):
     """
     Balanced Batch Sampler with minority class oversampling
@@ -210,6 +141,62 @@ def load_raw_data(pickle_path):
     return data_dict, num_nodes
 
 
+def load_abide_data(npy_path):
+    """
+    Load ABIDE dataset from .npy file
+    
+    The ABIDE dataset contains:
+        - 'timeseries': Time series data
+        - 'label': Labels for each sample
+        - 'corr': Correlation matrices (used as FC)
+        - 'pcorr': Partial correlation matrices (used as SC)
+        - 'site': Site information
+    
+    Args:
+        npy_path: Path to the .npy file
+    
+    Returns:
+        data_dict: Converted data dictionary in standard format
+        num_nodes: Number of nodes/ROIs
+    """
+    print(f"Loading ABIDE data from: {npy_path}")
+    
+    # Load the .npy file
+    abide_data = np.load(npy_path, allow_pickle=True).item()
+    
+    # Extract data
+    corr_matrices = abide_data['corr']  # Correlation matrices as FC
+    pcorr_matrices = abide_data['pcorr']  # Partial correlation matrices as SC
+    labels = abide_data['label']
+
+    # TODO
+    pcorr_matrices = np.abs(pcorr_matrices)
+    
+    # Get number of samples and nodes
+    n_samples = len(labels)
+    num_nodes = corr_matrices[0].shape[0]
+    
+    print(f"Total samples: {n_samples}")
+    print(f"Number of nodes: {num_nodes}")
+    print(f"Label distribution: {dict(Counter(labels))}")
+    
+    # Convert to standard format (similar to original data_dict)
+    data_dict = {}
+    for idx in range(n_samples):
+        # data_dict[idx] = {
+        #     'FC': corr_matrices[idx],  # Correlation matrix as FC
+        #     'SC': pcorr_matrices[idx],  # Partial correlation matrix as SC
+        #     'label': labels[idx]  # Single label (not a list)
+        # }
+        data_dict[idx] = {
+            'FC': pcorr_matrices[idx],  # Correlation matrix as FC
+            'SC': pcorr_matrices[idx],  # Partial correlation matrix as SC
+            'label': labels[idx]  # Single label (not a list)
+        }
+    
+    return data_dict, num_nodes
+
+
 def analyze_tasks(data_dict, min_ratio=0.05):
     """
     Analyze sample distribution for all tasks
@@ -308,13 +295,13 @@ def analyze_tasks(data_dict, min_ratio=0.05):
     return valid_tasks, task_stats
 
 
-def prepare_task_data(data_dict, task_idx, val_split=0.2, random_state=42):
+def prepare_task_data(data_dict, task_idx=None, val_split=0.2, random_state=42):
     """
     Prepare training and validation data for a specific task
     
     Args:
         data_dict: Data dictionary
-        task_idx: Task index
+        task_idx: Task index (None for single-task datasets like ABIDE)
         val_split: Validation set split ratio
         random_state: Random seed
     
@@ -328,10 +315,16 @@ def prepare_task_data(data_dict, task_idx, val_split=0.2, random_state=42):
         item = data_dict[idx].copy()
         # Extract label for specific task
         all_labels = item['label']
-        if not isinstance(all_labels, list):
-            all_labels = [all_labels]
-
-        item['label'] = all_labels[task_idx]
+        
+        # Handle multi-task format (list of labels)
+        if isinstance(all_labels, list):
+            if task_idx is None:
+                raise ValueError("task_idx must be specified for multi-task datasets")
+            item['label'] = all_labels[task_idx]
+        # Handle single-task format (single label) - for ABIDE
+        else:
+            item['label'] = all_labels
+        
         data_list.append(item)
 
     labels = [d['label'] for d in data_list]
@@ -343,7 +336,8 @@ def prepare_task_data(data_dict, task_idx, val_split=0.2, random_state=42):
         stratify=labels
     )
 
-    print(f"\nTask {task_idx} Data Split:")
+    task_info = f"Task {task_idx}" if task_idx is not None else "Dataset"
+    print(f"\n{task_info} Data Split:")
     print(f"  Training set: {len(train_data)} samples")
     train_counter = Counter([d['label'] for d in train_data])
     print(f"    Class distribution: {dict(train_counter)}")

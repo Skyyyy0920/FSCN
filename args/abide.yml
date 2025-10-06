@@ -1,0 +1,35 @@
+# ABIDE Dataset Configuration
+# Single-task binary classification for Autism detection
+
+dataset: abide
+data_path: W:\Brain Analysis\FSCN\data\abide.npy
+
+# Data splitting
+val_split: 0.1
+
+# Model architecture
+d_model: 128
+
+# Training hyperparameters
+batch_size: 64
+epochs: 100
+lr: 1.0e-5
+weight_decay: 1.0e-5
+patience: 20
+
+# Class imbalance handling
+use_balanced_sampler: false
+
+# Loss function
+loss_type: ce  # Options: ce, focal, weighted_ce, weighted_focal
+focal_gamma: 2.0
+
+# Reproducibility
+seed: 42
+
+# Device
+device: auto  # Options: auto, cpu, cuda
+
+# Tasks (not applicable for ABIDE, leave null)
+tasks: null
+
