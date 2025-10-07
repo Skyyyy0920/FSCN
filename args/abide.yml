@@ -2,13 +2,21 @@
 # Single-task binary classification for Autism detection
 
 dataset: abide
-data_path: W:\Brain Analysis\FSCN\data\abide.npy
 
-# Data splitting
+# Data loading options
+# Option 1: Use single file and split on-the-fly (use_split_data: false)
+# Option 2: Use pre-split files (use_split_data: true)
+use_split_data: true  # Set to true to use pre-split train/val/test files
+data_path: W:\Brain Analysis\FSCN\data\ABIDE\abide.npy
+train_data_path: W:\Brain Analysis\FSCN\data\ABIDE\abide_train.npy
+val_data_path: W:\Brain Analysis\FSCN\data\ABIDE\abide_val.npy
+test_data_path: W:\Brain Analysis\FSCN\data\ABIDE\abide_test.npy
+
+# Data splitting (only used when use_split_data is false)
 val_split: 0.1
 
 # Model architecture
-d_model: 200
+d_model: 256
 
 # Training hyperparameters
 batch_size: 32

@@ -4,7 +4,6 @@ import random
 import yaml
 import numpy as np
 import torch
-import torch.nn as nn
 from torch.utils.data import DataLoader
 from sklearn.metrics import (
     accuracy_score,
@@ -23,8 +22,9 @@ from model import DualBranchModel
 from data_utils import (
     load_raw_data,
     load_abide_data,
-    analyze_tasks,
+    load_abide_split_data,
     prepare_task_data,
+    prepare_task_data_from_dict,
     get_num_classes,
     print_task_summary,
     BrainDataset,
@@ -197,12 +197,12 @@ def evaluate(model, dataloader, criterion, device, show_report=False):
     return avg_loss, accuracy, precision, recall, f1, sensitivity, specificity, auroc
 
 
-def train_single_task(task_idx, train_data, val_data, num_nodes, config, device):
+def train_single_task(task_idx, train_data, val_data, test_data, num_nodes, config, device):
     print(f"\n{'#' * 80}")
     print(f"# Starting Training for Task {task_idx}")
     print(f"{'#' * 80}\n")
 
-    print_task_summary(task_idx, train_data, val_data)
+    print_task_summary(task_idx, train_data, val_data, test_data)
 
     num_classes = get_num_classes(train_data)
 
@@ -212,6 +212,7 @@ def train_single_task(task_idx, train_data, val_data, num_nodes, config, device)
 
     train_dataset = BrainDataset(train_data)
     val_dataset = BrainDataset(val_data)
+    test_dataset = BrainDataset(test_data) if test_data else None
 
     # Use Balanced Batch Sampler for training to handle class imbalance
     if config.get('use_balanced_sampler', True):
@@ -243,6 +244,15 @@ def train_single_task(task_idx, train_data, val_data, num_nodes, config, device)
         shuffle=False,
         num_workers=0
     )
+    
+    test_loader = None
+    if test_dataset is not None:
+        test_loader = DataLoader(
+            test_dataset,
+            batch_size=config['batch_size'],
+            shuffle=False,
+            num_workers=0
+        )
 
     model = DualBranchModel(
         num_nodes=num_nodes,
@@ -334,8 +344,29 @@ def train_single_task(task_idx, train_data, val_data, num_nodes, config, device)
     # Show detailed classification report on validation set
     print(f"\nFinal Evaluation on Validation Set:")
     _, _, _, _, _, _, _, _ = evaluate(model, val_loader, criterion, device, show_report=True)
+    
+    # Evaluate on test set if available
+    test_f1, test_auroc = 0.0, 0.0
+    if test_loader is not None:
+        print(f"\nFinal Evaluation on Test Set:")
+        test_loss, test_acc, test_prec, test_rec, test_f1, test_sens, test_spec, test_auroc = evaluate(
+            model, test_loader, criterion, device, show_report=True
+        )
+        
+        print(f"\n{'=' * 80}")
+        print(f"Test Set Performance:")
+        print(f"{'=' * 80}")
+        print(f"  Loss: {test_loss:.4f}")
+        print(f"  Accuracy: {test_acc:.4f}")
+        print(f"  Precision: {test_prec:.4f}")
+        print(f"  Recall: {test_rec:.4f}")
+        print(f"  F1-Score: {test_f1:.4f}")
+        print(f"  Sensitivity: {test_sens:.4f}")
+        print(f"  Specificity: {test_spec:.4f}")
+        print(f"  AUROC: {test_auroc:.4f}")
+        print(f"{'=' * 80}\n")
 
-    return best_val_f1, best_val_auroc
+    return best_val_f1, best_val_auroc, test_f1, test_auroc
 
 
 def load_config_from_yaml(config_path):
@@ -373,6 +404,17 @@ def parse_args():
                         # default=r'W:\Brain Analysis\data\data\data_dict.pkl',
                         default=r'W:\Brain Analysis\FSCN\data\abide.npy',
                         help='Path to data file (.pkl for ABCD, .npy for ABIDE)')
+    parser.add_argument('--use_split_data', action='store_true', default=False,
+                        help='Use pre-split data files (train/val/test)')
+    parser.add_argument('--train_data_path', type=str,
+                        default=r'W:\Brain Analysis\FSCN\data\abide_train.npy',
+                        help='Path to training data file (when use_split_data=True)')
+    parser.add_argument('--val_data_path', type=str,
+                        default=r'W:\Brain Analysis\FSCN\data\abide_val.npy',
+                        help='Path to validation data file (when use_split_data=True)')
+    parser.add_argument('--test_data_path', type=str,
+                        default=r'W:\Brain Analysis\FSCN\data\abide_test.npy',
+                        help='Path to test data file (when use_split_data=True)')
     parser.add_argument('--val_split', type=float, default=0.1)
 
     # Model
@@ -431,10 +473,18 @@ def main():
     print(f"  device: {device}")
     print("=" * 80 + "\n")
 
-    # Load data based on dataset type
+    # Load data based on dataset type and whether using pre-split data
     if args.dataset == 'abide':
-        print(f"Loading ABIDE dataset...")
-        data_dict, num_nodes = load_abide_data(args.data_path)
+        if args.use_split_data:
+            print(f"Loading pre-split ABIDE dataset...")
+            train_dict, val_dict, test_dict, num_nodes = load_abide_split_data(
+                args.train_data_path,
+                args.val_data_path,
+                args.test_data_path
+            )
+        else:
+            print(f"Loading ABIDE dataset...")
+            data_dict, num_nodes = load_abide_data(args.data_path)
     else:
         print(f"Loading ABCD dataset...")
         data_dict, num_nodes = load_raw_data(args.data_path)
@@ -445,29 +495,47 @@ def main():
     if args.dataset == 'abide':
         print("\nTraining ABIDE dataset (single-task binary classification)...\n")
 
-        train_data, val_data = prepare_task_data(
-            data_dict,
-            task_idx=None,  # No task index for single-task dataset
-            val_split=args.val_split,
-            random_state=args.seed
-        )
+        if args.use_split_data:
+            # Use pre-split data
+            train_data, val_data, test_data = prepare_task_data_from_dict(
+                train_dict,
+                val_dict,
+                test_dict,
+                task_idx=None  # No task index for single-task dataset
+            )
+        else:
+            # Split data on-the-fly (no test set in this case)
+            train_data, val_data = prepare_task_data(
+                data_dict,
+                task_idx=None,  # No task index for single-task dataset
+                val_split=args.val_split,
+                random_state=args.seed
+            )
+            # Create a dummy test set for compatibility
+            test_data = []
 
-        best_f1, best_auroc = train_single_task(
+        best_f1, best_auroc, test_f1, test_auroc = train_single_task(
             task_idx='abide',  # Use 'abide' as identifier
             train_data=train_data,
             val_data=val_data,
+            test_data=test_data,
             num_nodes=num_nodes,
             config=config,
             device=device
         )
 
-        results['abide'] = {'f1': best_f1, 'auroc': best_auroc}
+        results['abide'] = {'val_f1': best_f1, 'val_auroc': best_auroc, 'test_f1': test_f1, 'test_auroc': test_auroc}
 
         print("\n" + "=" * 80)
         print("ABIDE Dataset Training Complete!")
         print("=" * 80)
-        print(f"\nBest F1-score:  {best_f1:.4f}")
-        print(f"Best AUROC:     {best_auroc:.4f}")
+        print(f"\nValidation Set:")
+        print(f"  Best F1-score:  {best_f1:.4f}")
+        print(f"  Best AUROC:     {best_auroc:.4f}")
+        if args.use_split_data:
+            print(f"\nTest Set:")
+            print(f"  F1-score:  {test_f1:.4f}")
+            print(f"  AUROC:     {test_auroc:.4f}")
         print("=" * 80 + "\n")
 
     # Handle multi-task dataset (ABCD)
@@ -479,31 +547,34 @@ def main():
                 val_split=args.val_split,
                 random_state=args.seed
             )
+            # No test set for ABCD (not implemented yet)
+            test_data = []
 
-            best_f1, best_auroc = train_single_task(
+            best_f1, best_auroc, test_f1, test_auroc = train_single_task(
                 task_idx=task_idx,
                 train_data=train_data,
                 val_data=val_data,
+                test_data=test_data,
                 num_nodes=num_nodes,
                 config=config,
                 device=device
             )
 
-            results[task_idx] = {'f1': best_f1, 'auroc': best_auroc}
+            results[task_idx] = {'val_f1': best_f1, 'val_auroc': best_auroc, 'test_f1': test_f1, 'test_auroc': test_auroc}
 
         print("\n" + "=" * 80)
         print("All Tasks Training Complete!")
         print("=" * 80)
         print("\nTask Performance Summary:")
-        print(f"{'Task ID':<10} {'Best F1':<15} {'Best AUROC':<15} {'Status'}")
+        print(f"{'Task ID':<10} {'Val F1':<15} {'Val AUROC':<15} {'Status'}")
         print("-" * 60)
         for task_idx in args.tasks:
-            f1 = results[task_idx]['f1']
-            auroc = results[task_idx]['auroc']
+            f1 = results[task_idx]['val_f1']
+            auroc = results[task_idx]['val_auroc']
             print(f"{task_idx:<10} {f1:<15.4f} {auroc:<15.4f} FINISHED")
 
-        avg_f1 = np.mean([r['f1'] for r in results.values()])
-        avg_auroc = np.mean([r['auroc'] for r in results.values()])
+        avg_f1 = np.mean([r['val_f1'] for r in results.values()])
+        avg_auroc = np.mean([r['val_auroc'] for r in results.values()])
         print("-" * 60)
         print(f"{'Average':<10} {avg_f1:<15.4f} {avg_auroc:<15.4f}")
         print("=" * 80 + "\n")

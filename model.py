@@ -12,6 +12,7 @@ class TransformerEncoder(nn.Module):
 
     def __init__(self, input_dim, d_model, nhead=4, num_layers=2, dropout=0.1):
         super().__init__()
+        self.proj = nn.Linear(input_dim, d_model)
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=nhead,
@@ -22,6 +23,7 @@ class TransformerEncoder(nn.Module):
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
     def forward(self, x):
+        x = self.proj(x)
         x = self.transformer(x)
         return x
 

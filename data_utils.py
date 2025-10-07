@@ -160,10 +160,10 @@ def load_abide_data(npy_path):
         num_nodes: Number of nodes/ROIs
     """
     print(f"Loading ABIDE data from: {npy_path}")
-    
+
     # Load the .npy file
     abide_data = np.load(npy_path, allow_pickle=True).item()
-    
+
     # Extract data
     corr_matrices = abide_data['corr']  # Correlation matrices as FC
     pcorr_matrices = abide_data['pcorr']  # Partial correlation matrices as SC
@@ -171,15 +171,15 @@ def load_abide_data(npy_path):
 
     # TODO
     pcorr_matrices = np.abs(pcorr_matrices)
-    
+
     # Get number of samples and nodes
     n_samples = len(labels)
     num_nodes = corr_matrices[0].shape[0]
-    
+
     print(f"Total samples: {n_samples}")
     print(f"Number of nodes: {num_nodes}")
     print(f"Label distribution: {dict(Counter(labels))}")
-    
+
     # Convert to standard format (similar to original data_dict)
     data_dict = {}
     for idx in range(n_samples):
@@ -193,106 +193,83 @@ def load_abide_data(npy_path):
             'SC': pcorr_matrices[idx],  # Partial correlation matrix as SC
             'label': labels[idx]  # Single label (not a list)
         }
-    
+
     return data_dict, num_nodes
 
 
-def analyze_tasks(data_dict, min_ratio=0.05):
+def load_abide_split_data(train_path, val_path, test_path):
     """
-    Analyze sample distribution for all tasks
-    
-    Note: -1 indicates unlabeled data, which will be ignored when analyzing task validity,
-          but the data will not be deleted
+    加载已分割的 ABIDE 数据集（训练集、验证集、测试集）
     
     Args:
-        data_dict: Data dictionary
-        min_ratio: Minimum sample ratio threshold (default 5%)
+        train_path: 训练集 .npy 文件路径
+        val_path: 验证集 .npy 文件路径
+        test_path: 测试集 .npy 文件路径
     
     Returns:
-        valid_tasks: List of valid tasks
-        task_stats: Task statistics information
+        train_dict: 训练集数据字典
+        val_dict: 验证集数据字典
+        test_dict: 测试集数据字典
+        num_nodes: 节点数
     """
-    print("\n" + "=" * 80)
-    print("Dataset Task Analysis")
-    print("=" * 80)
-    print("Note: Label -1 indicates unlabeled data, which will be ignored in analysis")
-    print("      (but data is retained for potential contrastive learning)")
+    print(f"Loading split ABIDE data...")
+    print(f"  Train: {train_path}")
+    print(f"  Val: {val_path}")
+    print(f"  Test: {test_path}")
 
-    # Collect labels from all samples
-    all_labels = []
-    for idx in data_dict:
-        labels = data_dict[idx]['label']
-        # Ensure labels are in list format
-        if not isinstance(labels, list):
-            labels = [labels]
-        all_labels.append(labels)
+    # 加载训练集
+    train_data = np.load(train_path, allow_pickle=True).item()
+    train_corr = train_data['corr']
+    train_pcorr = np.abs(train_data['pcorr'])
+    train_labels = train_data['label']
 
-    # Detect number of tasks (assuming all samples have same label list length)
-    num_tasks = len(all_labels[0])
-    print(f"\nTotal number of tasks: {num_tasks}")
+    # 加载验证集
+    val_data = np.load(val_path, allow_pickle=True).item()
+    val_corr = val_data['corr']
+    val_pcorr = np.abs(val_data['pcorr'])
+    val_labels = val_data['label']
 
-    task_stats = {}
-    valid_tasks = []
+    # 加载测试集
+    test_data = np.load(test_path, allow_pickle=True).item()
+    test_corr = test_data['corr']
+    test_pcorr = np.abs(test_data['pcorr'])
+    test_labels = test_data['label']
 
-    for task_idx in range(num_tasks):
-        # Extract all labels for this task
-        task_labels = [labels[task_idx] for labels in all_labels]
+    # 获取节点数
+    num_nodes = train_corr[0].shape[0]
 
-        # Count complete class distribution (including -1)
-        counter_all = Counter(task_labels)
-        total_all = len(task_labels)
+    print(f"\nDataset statistics:")
+    print(f"  Number of nodes: {num_nodes}")
+    print(f"  Train samples: {len(train_labels)}, distribution: {dict(Counter(train_labels))}")
+    print(f"  Val samples: {len(val_labels)}, distribution: {dict(Counter(val_labels))}")
+    print(f"  Test samples: {len(test_labels)}, distribution: {dict(Counter(test_labels))}")
 
-        # Count only valid labels (0 and 1) distribution
-        task_labels_valid = [label for label in task_labels if label != -1]
-        counter_valid = Counter(task_labels_valid)
-        total_valid = len(task_labels_valid)
-
-        # Calculate ratios for all classes (for display)
-        class_ratios_all = {cls: count / total_all for cls, count in counter_all.items()}
-
-        # Calculate ratios and check balance only based on valid labels (0 and 1)
-        if total_valid > 0:
-            class_ratios_valid = {cls: count / total_valid for cls, count in counter_valid.items()}
-            min_class_ratio_valid = min(class_ratios_valid.values()) if counter_valid else 0
-            is_valid = min_class_ratio_valid >= min_ratio and len(counter_valid) >= 2  # At least two classes
-        else:
-            class_ratios_valid = {}
-            min_class_ratio_valid = 0
-            is_valid = False
-
-        task_stats[task_idx] = {
-            'total': total_all,
-            'total_valid': total_valid,
-            'distribution': dict(counter_all),
-            'distribution_valid': dict(counter_valid),
-            'ratios': class_ratios_all,
-            'ratios_valid': class_ratios_valid,
-            'min_ratio': min_class_ratio_valid,
-            'is_valid': is_valid
+    # 转换为标准格式
+    train_dict = {}
+    for idx in range(len(train_labels)):
+        train_dict[idx] = {
+            'FC': train_pcorr[idx],
+            'SC': train_pcorr[idx],
+            'label': train_labels[idx]
         }
 
-        if is_valid:
-            valid_tasks.append(task_idx)
+    val_dict = {}
+    for idx in range(len(val_labels)):
+        val_dict[idx] = {
+            'FC': val_pcorr[idx],
+            'SC': val_pcorr[idx],
+            'label': val_labels[idx]
+        }
 
-        # Print statistics
-        status = "✓ Valid" if is_valid else "✗ Invalid (imbalanced samples)"
-        print(f"\nTask {task_idx}: {status}")
-        print(f"  Total samples: {total_all} (labeled: {total_valid}, unlabeled: {counter_all.get(-1, 0)})")
-        print(f"  Complete class distribution: {dict(counter_all)}")
-        print(f"  Valid class distribution (0,1): {dict(counter_valid)}")
-        if total_valid > 0:
-            print(
-                f"  Valid class ratios: {', '.join([f'Class {k}: {v * 100:.2f}%' for k, v in class_ratios_valid.items()])}")
-            print(f"  Minimum valid class ratio: {min_class_ratio_valid * 100:.2f}%")
-        else:
-            print(f"  Warning: No valid labeled samples!")
+    test_dict = {}
+    for idx in range(len(test_labels)):
+        test_dict[idx] = {
+            'FC': test_pcorr[idx],
+            'SC': test_pcorr[idx],
+            'label': test_labels[idx]
+        }
 
-    print("\n" + "=" * 80)
-    print(f"Number of valid tasks: {len(valid_tasks)}/{num_tasks}")
-    print(f"Valid task list: {valid_tasks}")
-    print("=" * 80 + "\n")
-
-    return valid_tasks, task_stats
+    return train_dict, val_dict, test_dict, num_nodes
 
 
 def prepare_task_data(data_dict, task_idx=None, val_split=0.2, random_state=42):
@@ -315,7 +292,7 @@ def prepare_task_data(data_dict, task_idx=None, val_split=0.2, random_state=42):
         item = data_dict[idx].copy()
         # Extract label for specific task
         all_labels = item['label']
-        
+
         # Handle multi-task format (list of labels)
         if isinstance(all_labels, list):
             if task_idx is None:
@@ -324,7 +301,7 @@ def prepare_task_data(data_dict, task_idx=None, val_split=0.2, random_state=42):
         # Handle single-task format (single label) - for ABIDE
         else:
             item['label'] = all_labels
-        
+
         data_list.append(item)
 
     labels = [d['label'] for d in data_list]
@@ -349,6 +326,61 @@ def prepare_task_data(data_dict, task_idx=None, val_split=0.2, random_state=42):
     return train_data, val_data
 
 
+def prepare_task_data_from_dict(train_dict, val_dict, test_dict, task_idx=None):
+    """
+    从预分割的数据字典准备训练、验证和测试数据
+    
+    Args:
+        train_dict: 训练集数据字典
+        val_dict: 验证集数据字典
+        test_dict: 测试集数据字典
+        task_idx: 任务索引（对于单任务数据集如 ABIDE，设为 None）
+    
+    Returns:
+        train_data: 训练数据列表
+        val_data: 验证数据列表
+        test_data: 测试数据列表
+    """
+
+    def convert_to_list(data_dict):
+        data_list = []
+        for idx in sorted(data_dict.keys()):
+            item = data_dict[idx].copy()
+            all_labels = item['label']
+
+            # 处理多任务格式（标签列表）
+            if isinstance(all_labels, list):
+                if task_idx is None:
+                    raise ValueError("task_idx must be specified for multi-task datasets")
+                item['label'] = all_labels[task_idx]
+            # 处理单任务格式（单个标签）- 用于 ABIDE
+            else:
+                item['label'] = all_labels
+
+            data_list.append(item)
+        return data_list
+
+    train_data = convert_to_list(train_dict)
+    val_data = convert_to_list(val_dict)
+    test_data = convert_to_list(test_dict)
+
+    task_info = f"Task {task_idx}" if task_idx is not None else "Dataset"
+    print(f"\n{task_info} Data from pre-split files:")
+    print(f"  Training set: {len(train_data)} samples")
+    train_counter = Counter([d['label'] for d in train_data])
+    print(f"    Class distribution: {dict(train_counter)}")
+
+    print(f"  Validation set: {len(val_data)} samples")
+    val_counter = Counter([d['label'] for d in val_data])
+    print(f"    Class distribution: {dict(val_counter)}")
+
+    print(f"  Test set: {len(test_data)} samples")
+    test_counter = Counter([d['label'] for d in test_data])
+    print(f"    Class distribution: {dict(test_counter)}")
+
+    return train_data, val_data, test_data
+
+
 def get_num_classes(data_list):
     """
     Get number of classes in dataset (excluding -1)
@@ -366,7 +398,7 @@ def get_num_classes(data_list):
     return len(unique_labels)
 
 
-def print_task_summary(task_idx, train_data, val_data):
+def print_task_summary(task_idx, train_data, val_data, test_data=None):
     """
     Print task data summary
     
@@ -374,6 +406,7 @@ def print_task_summary(task_idx, train_data, val_data):
         task_idx: Task index
         train_data: Training data
         val_data: Validation data
+        test_data: Test data (optional)
     """
     train_labels = [d['label'] for d in train_data]
     val_labels = [d['label'] for d in val_data]
@@ -396,4 +429,14 @@ def print_task_summary(task_idx, train_data, val_data):
     print(f"Validation set: {len(val_data)} samples")
     print(f"  Complete distribution: {dict(val_counter)}")
     print(f"  Valid labels (0,1): {dict(val_counter_valid)} ({len(val_labels_valid)} samples)")
+
+    if test_data is not None:
+        test_labels = [d['label'] for d in test_data]
+        test_counter = Counter(test_labels)
+        test_labels_valid = [l for l in test_labels if l != -1]
+        test_counter_valid = Counter(test_labels_valid)
+        print(f"Test set: {len(test_data)} samples")
+        print(f"  Complete distribution: {dict(test_counter)}")
+        print(f"  Valid labels (0,1): {dict(test_counter_valid)} ({len(test_labels_valid)} samples)")
+
     print(f"{'=' * 60}\n")
