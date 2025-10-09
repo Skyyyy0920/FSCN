@@ -244,7 +244,7 @@ def train_single_task(task_idx, train_data, val_data, test_data, num_nodes, conf
         shuffle=False,
         num_workers=0
     )
-    
+
     test_loader = None
     if test_dataset is not None:
         test_loader = DataLoader(
@@ -282,8 +282,7 @@ def train_single_task(task_idx, train_data, val_data, test_data, num_nodes, conf
         weight_decay=config['weight_decay']
     )
 
-    best_val_f1 = 0
-    best_val_auroc = 0
+    best_val_acc, best_val_sens, best_val_spec = 0, 0, 0
     patience_counter = 0
     best_model_path = f'best_model_task_{task_idx}.pth'
 
@@ -304,21 +303,19 @@ def train_single_task(task_idx, train_data, val_data, test_data, num_nodes, conf
             f"  Valid - Loss: {val_loss:.4f}, Acc: {val_acc:.4f}, Prec: {val_prec:.4f}, Rec: {val_rec:.4f}, F1: {val_f1:.4f}, Sens: {val_sens:.4f}, Spec: {val_spec:.4f}, AUROC: {val_auroc:.4f}")
 
         # Use F1-score as primary metric for model selection (better for imbalanced data)
-        if val_f1 > best_val_f1 or (val_f1 == best_val_f1 and val_auroc > best_val_auroc):
-            best_val_f1 = val_f1
-            best_val_auroc = val_auroc
+        if val_acc > best_val_acc or (val_sens + val_spec > best_val_sens + best_val_spec):
+            best_val_acc = val_acc
+            best_val_sens = val_sens
+            best_val_spec = val_spec
             patience_counter = 0
             torch.save({
                 'task_idx': task_idx,
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'val_f1': val_f1,
-                'val_auroc': val_auroc,
                 'config': config,
-                'num_classes': num_classes
             }, best_model_path)
-            print(f"  ✓ Saved best model (F1: {val_f1:.4f}, AUROC: {val_auroc:.4f})")
+            print(f"  ✓ Saved best model at epoch {epoch + 1} (Acc: {val_acc:.4f}, Sens: {val_sens:.4f}, Spec: {val_spec:.4f})")
         else:
             patience_counter += 1
             print(f"  Early stopping counter: {patience_counter}/{config['patience']}")
@@ -327,15 +324,7 @@ def train_single_task(task_idx, train_data, val_data, test_data, num_nodes, conf
             print(f"\nEarly stopping triggered at epoch {epoch + 1}!")
             break
 
-        print()
-
-    # Load best model and show final evaluation report
-    print(f"\n{'=' * 80}")
     print(f"Task {task_idx} Training Complete!")
-    print(f"{'=' * 80}")
-    print(f"Best validation F1-score: {best_val_f1:.4f}")
-    print(f"Best validation AUROC: {best_val_auroc:.4f}")
-    print(f"Best model saved to: {best_model_path}")
 
     # Load best model for final evaluation
     checkpoint = torch.load(best_model_path)
@@ -344,18 +333,18 @@ def train_single_task(task_idx, train_data, val_data, test_data, num_nodes, conf
     # Show detailed classification report on validation set
     print(f"\nFinal Evaluation on Validation Set:")
     _, _, _, _, _, _, _, _ = evaluate(model, val_loader, criterion, device, show_report=True)
-    
+
     # Evaluate on test set if available
-    test_f1, test_auroc = 0.0, 0.0
+    test_acc, test_sens, test_spec = 0.0, 0.0, 0.0
     if test_loader is not None:
         print(f"\nFinal Evaluation on Test Set:")
         test_loss, test_acc, test_prec, test_rec, test_f1, test_sens, test_spec, test_auroc = evaluate(
             model, test_loader, criterion, device, show_report=True
         )
-        
-        print(f"\n{'=' * 80}")
+
+        print(f"\n{'*' * 100}")
         print(f"Test Set Performance:")
-        print(f"{'=' * 80}")
+        print(f"{'*' * 100}")
         print(f"  Loss: {test_loss:.4f}")
         print(f"  Accuracy: {test_acc:.4f}")
         print(f"  Precision: {test_prec:.4f}")
@@ -364,9 +353,9 @@ def train_single_task(task_idx, train_data, val_data, test_data, num_nodes, conf
         print(f"  Sensitivity: {test_sens:.4f}")
         print(f"  Specificity: {test_spec:.4f}")
         print(f"  AUROC: {test_auroc:.4f}")
-        print(f"{'=' * 80}\n")
+        print(f"{'*' * 100}\n")
 
-    return best_val_f1, best_val_auroc, test_f1, test_auroc
+    return best_val_acc, best_val_sens, best_val_spec, test_acc, test_sens, test_spec
 
 
 def load_config_from_yaml(config_path):
@@ -514,7 +503,7 @@ def main():
             # Create a dummy test set for compatibility
             test_data = []
 
-        best_f1, best_auroc, test_f1, test_auroc = train_single_task(
+        best_val_acc, best_val_sens, best_val_spec, test_acc, test_sens, test_spec = train_single_task(
             task_idx='abide',  # Use 'abide' as identifier
             train_data=train_data,
             val_data=val_data,
@@ -524,18 +513,23 @@ def main():
             device=device
         )
 
-        results['abide'] = {'val_f1': best_f1, 'val_auroc': best_auroc, 'test_f1': test_f1, 'test_auroc': test_auroc}
+        results['abide'] = {
+            'val_acc': best_val_acc, 'val_sens': best_val_sens, 'val_spec': best_val_spec,
+            'test_acc': test_acc, 'test_sens': test_sens, 'test_spec': test_spec
+        }
 
         print("\n" + "=" * 80)
         print("ABIDE Dataset Training Complete!")
         print("=" * 80)
-        print(f"\nValidation Set:")
-        print(f"  Best F1-score:  {best_f1:.4f}")
-        print(f"  Best AUROC:     {best_auroc:.4f}")
+        print(f"\nValidation Set (Best Model):")
+        print(f"  Accuracy:    {best_val_acc:.4f}")
+        print(f"  Sensitivity: {best_val_sens:.4f}")
+        print(f"  Specificity: {best_val_spec:.4f}")
         if args.use_split_data:
             print(f"\nTest Set:")
-            print(f"  F1-score:  {test_f1:.4f}")
-            print(f"  AUROC:     {test_auroc:.4f}")
+            print(f"  Accuracy:    {test_acc:.4f}")
+            print(f"  Sensitivity: {test_sens:.4f}")
+            print(f"  Specificity: {test_spec:.4f}")
         print("=" * 80 + "\n")
 
     # Handle multi-task dataset (ABCD)
@@ -550,7 +544,7 @@ def main():
             # No test set for ABCD (not implemented yet)
             test_data = []
 
-            best_f1, best_auroc, test_f1, test_auroc = train_single_task(
+            best_val_acc, best_val_sens, best_val_spec, test_acc, test_sens, test_spec = train_single_task(
                 task_idx=task_idx,
                 train_data=train_data,
                 val_data=val_data,
@@ -560,23 +554,28 @@ def main():
                 device=device
             )
 
-            results[task_idx] = {'val_f1': best_f1, 'val_auroc': best_auroc, 'test_f1': test_f1, 'test_auroc': test_auroc}
+            results[task_idx] = {
+                'val_acc': best_val_acc, 'val_sens': best_val_sens, 'val_spec': best_val_spec,
+                'test_acc': test_acc, 'test_sens': test_sens, 'test_spec': test_spec
+            }
 
         print("\n" + "=" * 80)
         print("All Tasks Training Complete!")
         print("=" * 80)
         print("\nTask Performance Summary:")
-        print(f"{'Task ID':<10} {'Val F1':<15} {'Val AUROC':<15} {'Status'}")
-        print("-" * 60)
+        print(f"{'Task ID':<10} {'Val Acc':<15} {'Val Sens':<15} {'Val Spec':<15} {'Status'}")
+        print("-" * 70)
         for task_idx in args.tasks:
-            f1 = results[task_idx]['val_f1']
-            auroc = results[task_idx]['val_auroc']
-            print(f"{task_idx:<10} {f1:<15.4f} {auroc:<15.4f} FINISHED")
+            acc = results[task_idx]['val_acc']
+            sens = results[task_idx]['val_sens']
+            spec = results[task_idx]['val_spec']
+            print(f"{task_idx:<10} {acc:<15.4f} {sens:<15.4f} {spec:<15.4f} FINISHED")
 
-        avg_f1 = np.mean([r['val_f1'] for r in results.values()])
-        avg_auroc = np.mean([r['val_auroc'] for r in results.values()])
-        print("-" * 60)
-        print(f"{'Average':<10} {avg_f1:<15.4f} {avg_auroc:<15.4f}")
+        avg_acc = np.mean([r['val_acc'] for r in results.values()])
+        avg_sens = np.mean([r['val_sens'] for r in results.values()])
+        avg_spec = np.mean([r['val_spec'] for r in results.values()])
+        print("-" * 70)
+        print(f"{'Average':<10} {avg_acc:<15.4f} {avg_sens:<15.4f} {avg_spec:<15.4f}")
         print("=" * 80 + "\n")
 
 

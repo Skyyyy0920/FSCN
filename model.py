@@ -12,28 +12,34 @@ class TransformerEncoder(nn.Module):
 
     def __init__(self, input_dim, d_model, nhead=4, num_layers=2, dropout=0.1):
         super().__init__()
-        self.proj = nn.Linear(input_dim, d_model)
+        # self.proj = nn.Linear(input_dim, d_model)
+
         encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model,
+            # d_model=d_model,
+            d_model=input_dim,
             nhead=nhead,
             dim_feedforward=d_model * 4,
             dropout=dropout,
             batch_first=True
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.proj = nn.Sequential(
+            nn.Linear(input_dim, d_model),
+            nn.LayerNorm(d_model)
+        )
 
     def forward(self, x):
-        x = self.proj(x)
         x = self.transformer(x)
+        x = self.proj(x)
         return x
 
 
 class GCNBranch(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim):
+    def __init__(self, input_dim, hidden_dim, output_dim, dropout=0.3):
         super().__init__()
         self.conv1 = GCNConv(input_dim, hidden_dim)
         self.conv2 = GCNConv(hidden_dim, output_dim)
-        self.dropout = nn.Dropout(0.3)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, edge_index, edge_weight=None):
         # x: [N, input_dim]
@@ -47,19 +53,20 @@ class GCNBranch(nn.Module):
 
 
 class GatedFusion(nn.Module):
-    def __init__(self, d_model):
+    def __init__(self, d_model, dropout=0.3):
         super().__init__()
         self.gate_net = nn.Sequential(
             nn.Linear(2 * d_model, d_model),
+            nn.LayerNorm(d_model),
             nn.ReLU(),
             nn.Linear(d_model, d_model),
+            nn.Dropout(dropout),
             nn.Sigmoid()
         )
         self.proj = nn.Linear(d_model, d_model)
 
     def forward(self, Z_F, Z_S):
-        # [B, N, d]
-        gate = self.gate_net(torch.cat([Z_F, Z_S], dim=-1))
+        gate = self.gate_net(torch.cat([Z_F, Z_S], dim=-1))  # [B, N, d]
         Z_fused = gate * Z_F + (1 - gate) * Z_S
         return self.proj(Z_fused)
 
@@ -128,22 +135,21 @@ class DualBranchModel(nn.Module):
         self.num_nodes = num_nodes
         self.d_model = d_model
 
-        # FC 分支：Transformer Encoder
         self.fc_branch = TransformerEncoder(
             input_dim=num_nodes,
             d_model=d_model,
             nhead=4,
-            num_layers=2
+            num_layers=2,
+            dropout=0.5
         )
 
-        # SC 分支：GCN
         self.sc_branch = GCNBranch(
             input_dim=num_nodes,
             hidden_dim=d_model,
-            output_dim=d_model
+            output_dim=d_model,
+            dropout=0.5
         )
 
-        # ===== 替换为结构感知门控交叉注意力 =====
         self.cross_attn_fc2sc = StructureAwareCrossAttention(d_model, nhead=4)
         self.cross_attn_sc2fc = StructureAwareCrossAttention(d_model, nhead=4)
 
@@ -154,13 +160,40 @@ class DualBranchModel(nn.Module):
 
         self.fusion_mlp = GatedFusion(d_model)
 
-        # 分类器
+        # # 分类器
+        # self.classifier = nn.Sequential(
+        #     nn.Linear(num_nodes * d_model, 128),
+        #     nn.ReLU(),
+        #     nn.Dropout(0.3),
+        #     nn.Linear(128, num_classes)
+        # )
+
         self.classifier = nn.Sequential(
-            nn.Linear(num_nodes * d_model, 128),
+            nn.Dropout(0.4),
+            nn.Linear(num_nodes * d_model, 256),
+            nn.LayerNorm(256),  # ✅ 添加LayerNorm
             nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(128, num_classes)
+            nn.Dropout(0.4),
+            nn.Linear(256, 64),
+            nn.LayerNorm(64),  # ✅ 添加LayerNorm
+            nn.ReLU(),
+            nn.Dropout(0.4),
+            nn.Linear(64, num_classes)
         )
+
+        # self.global_pool = nn.Sequential(
+        #     nn.AdaptiveAvgPool1d(1),  # [B, d_model, N] -> [B, d_model, 1]
+        # )
+        #
+        # # ✅ 分类器：输入维度从25600降到128
+        # self.classifier = nn.Sequential(
+        #     nn.Dropout(0.5),
+        #     nn.Linear(d_model, 64),  # 128 -> 64 (参数量: 8,192)
+        #     nn.LayerNorm(64),
+        #     nn.ReLU(),
+        #     nn.Dropout(0.5),
+        #     nn.Linear(64, num_classes)  # 64 -> 2 (参数量: 128)
+        # )
 
     def forward(self, fc_matrix, sc_matrix):
         """
@@ -189,6 +222,18 @@ class DualBranchModel(nn.Module):
         Z_joint = self.fusion_mlp(Z_F_fused, Z_S_fused)
 
         logits = self.classifier(Z_joint.flatten(start_dim=1))
+
+        # # Z_pooled = Z_joint.mean(dim=1)  # [B, 128]
+        #
+        # # 或方法B: 最大池化
+        # Z_pooled = Z_joint.max(dim=1)[0]  # [B, 128]
+        #
+        # # 或方法C: 同时使用avg和max
+        # # Z_avg = Z_joint.mean(dim=1)
+        # # Z_max = Z_joint.max(dim=1)[0]
+        # # Z_pooled = torch.cat([Z_avg, Z_max], dim=1)  # [B, 256]
+        #
+        # logits = self.classifier(Z_pooled)
 
         return logits
 

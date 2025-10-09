@@ -1,0 +1,55 @@
+# X-Learner Model Configuration for ABCD Dataset
+# Multi-task classification with three-stage training
+
+dataset: ABCD
+data_path: W:\Brain Analysis\data\data\data_dict.pkl
+
+# Data splitting
+val_split: 0.2
+
+# Model architecture
+# Note: d_model must be divisible by nhead (4)
+# Valid values: 64, 128, 256, 512, etc.
+d_model: 128
+dropout: 0.4
+
+# Stage 1: Base Predictor Training (FC-only & SC-only)
+stage1_epochs: 40
+stage1_lr: 1.0e-4
+stage1_patience: 15
+
+# Stage 2: Effect Learner Training (learn modal differences)
+stage2_epochs: 25
+stage2_lr: 5.0e-5
+stage2_patience: 10
+
+# Stage 3: Propensity Network & End-to-End Finetuning
+stage3_epochs: 40
+stage3_lr: 1.0e-5
+stage3_patience: 15
+stage3_finetune_all: false  # Set to true for end-to-end finetuning
+
+# General training parameters
+batch_size: 32
+lr: 1.0e-4  # Default learning rate
+weight_decay: 1.0e-5
+
+# Class imbalance handling
+use_balanced_sampler: true
+minority_ratio: 0.3
+
+# Loss function
+loss_type: weighted_focal  # Options: ce, focal, weighted_ce, weighted_focal
+focal_gamma: 2.0
+
+# Reproducibility
+seed: 42
+
+# Device
+device: auto  # Options: auto, cpu, cuda
+
+# Tasks to train (Task IDs for ABCD dataset)
+# Default: [4, 5, 7, 8]
+# You can customize this list to train specific tasks
+tasks: [4, 5, 7, 8]
+

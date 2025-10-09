@@ -19,11 +19,11 @@ val_split: 0.1
 d_model: 256
 
 # Training hyperparameters
-batch_size: 32
+batch_size: 64
 epochs: 100
-lr: 1.0e-5
-weight_decay: 1.0e-6
-patience: 20
+lr: 2.0e-4
+weight_decay: 1.0e-2
+patience: 200
 
 # Class imbalance handling
 use_balanced_sampler: false
